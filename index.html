@@ -22,6 +22,9 @@
 }
 
 body {
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
     background: linear-gradient(135deg,#1e3c72,#2a5298,#4facfe);
     background-size:400% 400%;
     animation: gradientMove 12s ease infinite;
@@ -531,22 +534,95 @@ body {
 }
 
 /* --- Mobile responsiveness --- */
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .chat-container {
-        width: 92vw;
-        height: 78vh;
-        right: 4vw;
-        bottom: 88px;
+        width: calc(100vw - 20px);
+        max-width: calc(100vw - 20px);
+        height: min(78dvh, 680px);
+        max-height: calc(100dvh - 96px);
+        right: 10px;
+        bottom: calc(76px + env(safe-area-inset-bottom));
+        border-radius: 18px;
     }
-    .chat-btn {
-        bottom: 16px;
-        right: 16px;
+
+    .chat-header {
+        padding: 12px;
+        font-size: 16px;
     }
+
+    .chat-box {
+        padding: 14px;
+    }
+
     .bot-message, .user-message, .error-message {
-        max-width: 88%;
+        max-width: 90%;
+        font-size: 14px;
     }
+
+    .chat-input {
+        padding: 10px;
+    }
+
+    .chat-input input {
+        min-width: 0;
+        font-size: 16px; /* prevents iOS Safari from zooming the page when typing */
+        padding: 11px 14px;
+    }
+
+    .chat-input button {
+        flex: 0 0 42px;
+        width: 42px;
+        height: 42px;
+        margin-left: 7px;
+    }
+
     .chat-gallery {
         max-width: 100%;
+    }
+
+    .chat-gallery-viewport {
+        height: 180px;
+    }
+
+    .lightbox-overlay {
+        padding: 10px;
+    }
+
+    .lightbox-stage,
+    .lightbox-img {
+        max-width: 96vw;
+        max-height: 82dvh;
+    }
+
+    .lightbox-nav {
+        width: 38px;
+        height: 38px;
+        font-size: 22px;
+    }
+
+    .lightbox-prev { left: 6px; }
+    .lightbox-next { right: 6px; }
+}
+
+@media (max-width: 360px) {
+    .chat-container {
+        width: calc(100vw - 12px);
+        max-width: calc(100vw - 12px);
+        right: 6px;
+        bottom: calc(70px + env(safe-area-inset-bottom));
+    }
+
+    .chat-header {
+        padding: 10px;
+    }
+
+    .chat-header img {
+        width: 34px !important;
+        height: 34px !important;
+    }
+
+    .chat-gallery-viewport {
+        height: 155px;
     }
 }
     </style>
