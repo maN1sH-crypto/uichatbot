@@ -1102,7 +1102,7 @@ async function sendResolvedMessage(displayText, queryText, stepImage) {
     setTyping(true);
 
     try {
-        var response = await fetch("http://127.0.0.1:5000/chat", {
+        var response = await fetch("https://morally-chaplain-footrest.ngrok-free.dev/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
 
