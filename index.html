@@ -677,8 +677,14 @@ let lastBotListItems = {};
 // exact step instead of all at once with the initial answer.
 let lastBotStepImages = {};
 
-var customerId = localStorage.getItem("kora_customer_id");
-var conversationId = localStorage.getItem("kora_conversation_id");
+var customerId = sessionStorage.getItem("kora_customer_id") || localStorage.getItem("kora_customer_id");
+var conversationId = sessionStorage.getItem("kora_conversation_id") || localStorage.getItem("kora_conversation_id");
+if (customerId && conversationId) {
+    sessionStorage.setItem("kora_customer_id", customerId);
+    sessionStorage.setItem("kora_conversation_id", conversationId);
+    localStorage.removeItem("kora_customer_id");
+    localStorage.removeItem("kora_conversation_id");
+}
 var conversationStatus = null;
 var customerSocket = null;
 var historyLoaded = false;
@@ -687,20 +693,28 @@ var renderedCustomerMessageIds = new Set();
 
 function customerApiBase() {
     var localHost = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
-    return window.KORALINK_API_URL ||
-        (localHost && window.location.port !== "5000" ? "http://127.0.0.1:5000" : "");
+    var queryApiUrl = new URLSearchParams(window.location.search).get("api");
+    var configuredApiUrl = queryApiUrl || window.KORALINK_API_URL || "";
+    if (configuredApiUrl.includes("YOUR-ACTIVE-NGROK-URL")) configuredApiUrl = "";
+    if (configuredApiUrl) return configuredApiUrl.replace(/\/+$/, "");
+    if (localHost && window.location.port !== "5000") return "http://127.0.0.1:5000";
+    if (localHost) return "";
+    throw new Error("Backend URL is missing. Set window.KORALINK_API_URL to your active ngrok HTTPS URL, or open this page with ?api=https://your-ngrok-domain.");
 }
 
 async function customerApi(path, options) {
-    var response = await fetch(customerApiBase() + path, options || {});
+    options = options || {};
+    options.headers = Object.assign({}, options.headers || {});
+    if (customerApiBase().includes("ngrok")) options.headers["ngrok-skip-browser-warning"] = "true";
+    var response = await fetch(customerApiBase() + path, options);
     var data = await response.json().catch(function () { return {}; });
     if (!response.ok) throw new Error(data.error || ("Server returned HTTP " + response.status));
     return data;
 }
 
 function saveCustomerSession() {
-    localStorage.setItem("kora_customer_id", customerId);
-    localStorage.setItem("kora_conversation_id", conversationId);
+    sessionStorage.setItem("kora_customer_id", customerId);
+    sessionStorage.setItem("kora_conversation_id", conversationId);
 }
 
 function joinCustomerRoom() {
