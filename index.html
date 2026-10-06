@@ -89,7 +89,7 @@ body {
 }
 
 #languageSelect {
-    background: white;
+    background: #2f3fba;
     color: #2f3fba;
     border: none;
     border-radius: 8px;
@@ -98,6 +98,7 @@ body {
     outline: none;
     cursor: pointer;
     width: 45px;
+    visibility: hidden;
     
 }
 
@@ -601,7 +602,10 @@ body {
     </div>
  
 </div>
- 
+ <script>
+  window.KORALINK_API_URL = "https://morally-chaplain-footrest.ngrok-free.dev";
+</script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
 
 // Maps the :token: placeholders used in koralink.json answers to real
@@ -673,6 +677,123 @@ let lastBotListItems = {};
 // exact step instead of all at once with the initial answer.
 let lastBotStepImages = {};
 
+var customerId = localStorage.getItem("kora_customer_id");
+var conversationId = localStorage.getItem("kora_conversation_id");
+var conversationStatus = null;
+var customerSocket = null;
+var historyLoaded = false;
+var customerPollTimer = null;
+var renderedCustomerMessageIds = new Set();
+
+function customerApiBase() {
+    var localHost = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
+    return window.KORALINK_API_URL ||
+        (localHost && window.location.port !== "5000" ? "http://127.0.0.1:5000" : "");
+}
+
+async function customerApi(path, options) {
+    var response = await fetch(customerApiBase() + path, options || {});
+    var data = await response.json().catch(function () { return {}; });
+    if (!response.ok) throw new Error(data.error || ("Server returned HTTP " + response.status));
+    return data;
+}
+
+function saveCustomerSession() {
+    localStorage.setItem("kora_customer_id", customerId);
+    localStorage.setItem("kora_conversation_id", conversationId);
+}
+
+function joinCustomerRoom() {
+    if (customerSocket && customerSocket.connected && customerId && conversationId) {
+        customerSocket.emit("join_customer", { customer_id: customerId, conversation_id: conversationId });
+    }
+}
+
+function connectCustomerSocket() {
+    if (!window.io || customerSocket) return;
+    customerSocket = window.io(customerApiBase());
+    customerSocket.on("connect", joinCustomerRoom);
+    customerSocket.on("new_message", function (message) {
+        if (message.conversation_id !== conversationId) return;
+        if (message.sender_type === "agent" || message.sender_type === "system") {
+            addCustomerLiveMessage(message);
+        }
+    });
+    customerSocket.on("conversation_claimed", function (event) {
+        if (event.conversation && event.conversation.id === conversationId) {
+            conversationStatus = event.conversation.status;
+        }
+    });
+    customerSocket.on("conversation_closed", function (event) {
+        if (event.conversation && event.conversation.id === conversationId) {
+            conversationStatus = "closed";
+        }
+    });
+}
+
+function addCustomerLiveMessage(message) {
+    if (message.id && renderedCustomerMessageIds.has(message.id)) return;
+    var label = message.sender_type === "agent" ? "Support agent: " : "";
+    addMessage(label + message.message, "bot", null, null, message.id);
+}
+
+async function pollCustomerConversation() {
+    if (!customerId || !conversationId || !["waiting_human", "human_active"].includes(conversationStatus)) return;
+    try {
+        var history = await customerApi("/api/customer/conversation/" + encodeURIComponent(conversationId) +
+            "?customer_id=" + encodeURIComponent(customerId));
+        conversationStatus = history.conversation.status;
+        history.messages.forEach(function (message) {
+            if (message.sender_type === "agent" || message.sender_type === "system") {
+                addCustomerLiveMessage(message);
+            }
+        });
+    } catch (error) {
+        console.warn("Could not refresh the support conversation:", error);
+    }
+}
+
+function startCustomerPolling() {
+    if (!customerPollTimer) customerPollTimer = setInterval(pollCustomerConversation, 3000);
+}
+
+async function startCustomerSession() {
+    var session = await customerApi("/api/customer/session", { method: "POST" });
+    customerId = session.customer_id;
+    conversationId = session.conversation.id;
+    conversationStatus = session.conversation.status;
+    historyLoaded = true;
+    saveCustomerSession();
+    connectCustomerSocket();
+    joinCustomerRoom();
+    startCustomerPolling();
+}
+
+async function ensureCustomerSession() {
+    if (!customerId || !conversationId) {
+        await startCustomerSession();
+        return;
+    }
+    if (!historyLoaded) {
+        try {
+            var history = await customerApi("/api/customer/conversation/" + encodeURIComponent(conversationId) +
+                "?customer_id=" + encodeURIComponent(customerId));
+            conversationStatus = history.conversation.status;
+            history.messages.forEach(function (message) {
+                if (message.sender_type === "customer") addMessage(message.message, "user", null, null, message.id);
+                else addMessage(message.message, "bot", message.payload && message.payload.images,
+                    message.payload && message.payload.step_images, message.id);
+            });
+        } catch (error) {
+            await startCustomerSession();
+        }
+        historyLoaded = true;
+    }
+    connectCustomerSocket();
+    joinCustomerRoom();
+    startCustomerPolling();
+}
+
 function toggleChat() {
     var box = document.getElementById("chatContainer");
     box.style.display = box.style.display === "flex" ? "none" : "flex";
@@ -692,7 +813,9 @@ function extractListItems(text) {
     return items;
 }
 
-function addMessage(text, type, images, stepImages) {
+function addMessage(text, type, images, stepImages, messageId) {
+    if (messageId && renderedCustomerMessageIds.has(messageId)) return;
+    if (messageId) renderedCustomerMessageIds.add(messageId);
     var chatBox = document.getElementById("chatBox");
     var div = document.createElement("div");
     div.className = type + "-message";
@@ -1097,28 +1220,37 @@ async function sendMessage() {
 // alongside whatever images the backend itself returns for this answer.
 async function sendResolvedMessage(displayText, queryText, stepImage) {
     var language = document.getElementById("languageSelect").value;
-
-    addMessage(displayText, "user");
     setTyping(true);
 
     try {
-        var response = await fetch("https://morally-chaplain-footrest.ngrok-free.dev/chat", {
+        await ensureCustomerSession();
+        if (conversationStatus === "closed") {
+            document.getElementById("chatBox").innerHTML = "";
+            lastBotListItems = {};
+            lastBotStepImages = {};
+            await startCustomerSession();
+        }
+        addMessage(displayText, "user");
+        var data = await customerApi("/api/customer/message", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-
-            body: JSON.stringify({ message: queryText, language: language })
+            body: JSON.stringify({
+                customer_id: customerId,
+                conversation_id: conversationId,
+                message: queryText,
+                language: language
+            })
         });
-
-        if (!response.ok) {
-            throw new Error("Server returned an error.");
-        }
-
-        var data = await response.json();
+        conversationId = data.conversation.id;
+        conversationStatus = data.conversation.status;
+        saveCustomerSession();
+        joinCustomerRoom();
         var responseImages = (stepImage ? [stepImage] : []).concat(data.images || []);
-        addMessage(data.response, "bot", responseImages, data.step_images);
+        if (data.response) addMessage(data.response, "bot", responseImages, data.step_images);
 
     } catch (error) {
-        addMessage("Could not connect to the server. Please make sure the bot is running.", "error");
+        console.error("KoraLink chat request failed:", error);
+        addMessage(error.message || "Could not connect to the server. Please make sure the bot is running.", "error");
     } finally {
         setTyping(false);
         document.getElementById("message").focus();
