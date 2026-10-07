@@ -592,6 +592,8 @@ body {
     <div class="typing" id="typing">Bot is typing...</div>
  
     <div class="chat-input">
+        <input type="file" id="customerAttachment" accept="image/png,image/jpeg,image/gif,image/webp" hidden onchange="sendCustomerAttachment(this.files[0])">
+        <button type="button" id="customerAttachmentBtn" title="Share a screenshot with support" aria-label="Share a screenshot" style="display:none" onclick="document.getElementById('customerAttachment').click()">&#128206;</button>
         <input
             type="text"
             id="message"
@@ -705,8 +707,15 @@ function customerApiBase() {
 async function customerApi(path, options) {
     options = options || {};
     options.headers = Object.assign({}, options.headers || {});
-    if (customerApiBase().includes("ngrok")) options.headers["ngrok-skip-browser-warning"] = "true";
-    var response = await fetch(customerApiBase() + path, options);
+    var apiBase = customerApiBase();
+    if (apiBase.includes("ngrok")) options.headers["ngrok-skip-browser-warning"] = "true";
+    var response;
+    try {
+        response = await fetch(apiBase + path, options);
+    } catch (error) {
+        console.error("KoraLink API request failed", { url: apiBase + path, pageOrigin: window.location.origin, error: error });
+        throw new Error("Cannot reach the Flask server at " + apiBase + ". Make sure Flask is running on port 5000, ngrok is forwarding to port 5000, and FRONTEND_ORIGIN allows " + window.location.origin + ".");
+    }
     var data = await response.json().catch(function () { return {}; });
     if (!response.ok) throw new Error(data.error || ("Server returned HTTP " + response.status));
     return data;
@@ -736,19 +745,24 @@ function connectCustomerSocket() {
     customerSocket.on("conversation_claimed", function (event) {
         if (event.conversation && event.conversation.id === conversationId) {
             conversationStatus = event.conversation.status;
+            syncCustomerAttachmentButton();
         }
     });
     customerSocket.on("conversation_closed", function (event) {
         if (event.conversation && event.conversation.id === conversationId) {
             conversationStatus = "closed";
+            syncCustomerAttachmentButton();
+            clearCustomerAttachmentPreviews();
         }
     });
 }
 
 function addCustomerLiveMessage(message) {
     if (message.id && renderedCustomerMessageIds.has(message.id)) return;
+    var ownMessage = message.sender_type === "customer";
     var label = message.sender_type === "agent" ? "Support agent: " : "";
-    addMessage(label + message.message, "bot", null, null, message.id);
+    addMessage(label + message.message, ownMessage ? "user" : "bot", null, null, message.id,
+        message.payload && message.payload.attachment);
 }
 
 async function pollCustomerConversation() {
@@ -757,6 +771,8 @@ async function pollCustomerConversation() {
         var history = await customerApi("/api/customer/conversation/" + encodeURIComponent(conversationId) +
             "?customer_id=" + encodeURIComponent(customerId));
         conversationStatus = history.conversation.status;
+        syncCustomerAttachmentButton();
+        if (conversationStatus === "closed") clearCustomerAttachmentPreviews();
         history.messages.forEach(function (message) {
             if (message.sender_type === "agent" || message.sender_type === "system") {
                 addCustomerLiveMessage(message);
@@ -771,6 +787,46 @@ function startCustomerPolling() {
     if (!customerPollTimer) customerPollTimer = setInterval(pollCustomerConversation, 3000);
 }
 
+function syncCustomerAttachmentButton() {
+    var button = document.getElementById("customerAttachmentBtn");
+    if (button) button.style.display = ["waiting_human", "human_active"].includes(conversationStatus) ? "flex" : "none";
+}
+
+function clearCustomerAttachmentPreviews() {
+    document.querySelectorAll("#chatBox .support-attachment-image").forEach(function (image) {
+        if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
+        image.remove();
+    });
+}
+
+async function sendCustomerAttachment(file) {
+    var input = document.getElementById("customerAttachment");
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+        addMessage("Images must be 5 MB or smaller.", "error");
+        input.value = "";
+        return;
+    }
+    try {
+        await ensureCustomerSession();
+        if (!["waiting_human", "human_active"].includes(conversationStatus)) {
+            throw new Error("Ask to chat with support before sharing a screenshot.");
+        }
+        var form = new FormData();
+        form.append("file", file);
+        form.append("customer_id", customerId);
+        var message = await customerApi("/api/customer/conversation/" + encodeURIComponent(conversationId) + "/attachment", {
+            method: "POST",
+            body: form
+        });
+        addCustomerLiveMessage(message.message);
+    } catch (error) {
+        addMessage(error.message || "Could not send the screenshot.", "error");
+    } finally {
+        input.value = "";
+    }
+}
+
 async function startCustomerSession() {
     var session = await customerApi("/api/customer/session", { method: "POST" });
     customerId = session.customer_id;
@@ -781,6 +837,7 @@ async function startCustomerSession() {
     connectCustomerSocket();
     joinCustomerRoom();
     startCustomerPolling();
+    syncCustomerAttachmentButton();
 }
 
 async function ensureCustomerSession() {
@@ -793,10 +850,13 @@ async function ensureCustomerSession() {
             var history = await customerApi("/api/customer/conversation/" + encodeURIComponent(conversationId) +
                 "?customer_id=" + encodeURIComponent(customerId));
             conversationStatus = history.conversation.status;
+            syncCustomerAttachmentButton();
             history.messages.forEach(function (message) {
-                if (message.sender_type === "customer") addMessage(message.message, "user", null, null, message.id);
+                if (message.sender_type === "customer") addMessage(message.message, "user", null, null, message.id,
+                    message.payload && message.payload.attachment);
                 else addMessage(message.message, "bot", message.payload && message.payload.images,
-                    message.payload && message.payload.step_images, message.id);
+                    message.payload && message.payload.step_images, message.id,
+                    message.payload && message.payload.attachment);
             });
         } catch (error) {
             await startCustomerSession();
@@ -827,7 +887,7 @@ function extractListItems(text) {
     return items;
 }
 
-function addMessage(text, type, images, stepImages, messageId) {
+function addMessage(text, type, images, stepImages, messageId, attachment) {
     if (messageId && renderedCustomerMessageIds.has(messageId)) return;
     if (messageId) renderedCustomerMessageIds.add(messageId);
     var chatBox = document.getElementById("chatBox");
@@ -864,6 +924,27 @@ function addMessage(text, type, images, stepImages, messageId) {
         // bot list-option whose line included one, or pasting answer
         // text back in) - render it exactly the same way bot text is.
         div.innerHTML = renderIconLine(text);
+    }
+
+    if (attachment && attachment.file_id && customerId && conversationId) {
+        var attachmentImage = document.createElement("img");
+        attachmentImage.className = "support-attachment-image";
+        attachmentImage.alt = attachment.filename || "Image shared in chat";
+        attachmentImage.style.cssText = "display:block;max-width:100%;max-height:260px;margin-top:10px;border-radius:10px;object-fit:contain";
+        var imageUrl = customerApiBase() + "/api/customer/conversation/" +
+            encodeURIComponent(conversationId) + "/attachment/" + encodeURIComponent(attachment.file_id) +
+            "?customer_id=" + encodeURIComponent(customerId);
+        fetch(imageUrl, { headers: { "ngrok-skip-browser-warning": "true" } })
+            .then(function (response) {
+                if (!response.ok) throw new Error("Image unavailable");
+                return response.blob();
+            })
+            .then(function (blob) {
+                attachmentImage.dataset.objectUrl = URL.createObjectURL(blob);
+                attachmentImage.src = attachmentImage.dataset.objectUrl;
+            })
+            .catch(function () { attachmentImage.alt = "Image could not be loaded"; });
+        div.appendChild(attachmentImage);
     }
 
     chatBox.appendChild(div);
@@ -1257,6 +1338,7 @@ async function sendResolvedMessage(displayText, queryText, stepImage) {
         });
         conversationId = data.conversation.id;
         conversationStatus = data.conversation.status;
+        syncCustomerAttachmentButton();
         saveCustomerSession();
         joinCustomerRoom();
         var responseImages = (stepImage ? [stepImage] : []).concat(data.images || []);
